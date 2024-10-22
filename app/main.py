@@ -1,5 +1,6 @@
-from fastapi import FastAPI, Depends
-from fastapi_users import FastAPIUsers, BaseUserManager, UUIDIDMixin
+from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi_users import FastAPIUsers, UUIDIDMixin
+from fastapi_users.manager import BaseUserManager
 from fastapi_users.authentication import JWTStrategy, AuthenticationBackend
 from fastapi_users.authentication import BearerTransport
 from pydantic import BaseModel
@@ -8,22 +9,42 @@ from pynamodb.attributes import UnicodeAttribute, BooleanAttribute
 import uuid
 from typing import Optional
 from fastapi_users import schemas
-from fastapi import Request 
+from fastapi.security import OAuth2PasswordRequestForm
+from fastapi import APIRouter
+from passlib.context import CryptContext
+from fastapi.concurrency import run_in_threadpool
+# Set up logging
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Password helper for hashing and verifying passwords
+class PasswordHelper:
+    def __init__(self):
+        self.pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+    def hash(self, password: str) -> str:
+        return self.pwd_context.hash(password)
+
+    def verify(self, plain_password: str, hashed_password: str) -> bool:
+        return self.pwd_context.verify(plain_password, hashed_password)
 
 # Define the user model using PynamoDB
 class UserModel(Model):
     class Meta:
         table_name = "users"
-        region = "us-east-1"  # Adjust as per your DynamoDB region
-        host = "http://localhost:8000"  # Set this to DynamoDB local for development, remove for production
+        region = "us-east-1"
+        host = "http://localhost:8000"
 
     id = UnicodeAttribute(hash_key=True, default=str(uuid.uuid4()))
     email = UnicodeAttribute(null=False)
     hashed_password = UnicodeAttribute(null=False)
     is_active = BooleanAttribute(default=True)
     is_superuser = BooleanAttribute(default=False)
+    access_token = UnicodeAttribute(null=True)
 
-# Pydantic models
+# Pydantic models for user schema
 class UserRead(schemas.BaseUser[uuid.UUID]):
     pass
 
@@ -33,17 +54,28 @@ class UserCreate(schemas.BaseUserCreate):
 class UserUpdate(UserCreate):
     pass
 
-# Custom UserManager
+# Custom UserManager with PynamoDB logic
 class UserManager(UUIDIDMixin, BaseUserManager[UserModel, uuid.UUID]):
-    user_db_model = UserModel
+    user_db: UserModel
+    password_helper: PasswordHelper
 
+    def __init__(self, user_db, password_helper: PasswordHelper = PasswordHelper()):
+        self.user_db = user_db
+        self.password_helper = password_helper
+
+    async def validate_password(self, password: str, hashed_password: str) -> bool:
+        return self.password_helper.verify(password, hashed_password)
+
+    async def on_after_register(self, user: UserModel, request=None):
+        logger.info(f"User {user.email} has registered.")
+
+    # async def get(self, user_id: uuid.UUID) -> Optional[UserModel]:
+    #     return UserModel.get(str(user_id))
+    
     async def get(self, user_id: uuid.UUID) -> Optional[UserModel]:
-        try:
-            # Convert UUID to a string before querying DynamoDB
-            return UserModel.get(str(user_id))
-        except UserModel.DoesNotExist:
-            return None
-
+    # Convert UUID to string and use run_in_threadpool
+        return await run_in_threadpool(UserModel.get, str(user_id))
+    
     async def get_by_email(self, user_email: str) -> Optional[UserModel]:
         try:
             result = UserModel.scan(UserModel.email == user_email)
@@ -51,28 +83,23 @@ class UserManager(UUIDIDMixin, BaseUserManager[UserModel, uuid.UUID]):
                 return user
         except UserModel.DoesNotExist:
             return None
-        return None
 
     async def create(self, user: UserCreate, safe: bool = False, request: Optional[Request] = None) -> UserModel:
+        existing_user = await self.get_by_email(user.email)
+        if existing_user:
+            raise HTTPException(status_code=400, detail="User with this email already exists.")
         user_db = UserModel(
-            id=str(uuid.uuid4()),  # Ensure ID is stored as a string
+            id=str(uuid.uuid4()),
             email=user.email,
             hashed_password=self.password_helper.hash(user.password),
             is_active=True,
             is_superuser=False,
+            access_token = None,
         )
         user_db.save()
         return user_db
 
-
-    async def validate_password(self, password: str, user: UserCreate) -> None:
-        # Add custom password validation logic here
-        pass
-
-    async def on_after_register(self, user: UserModel, request: Optional[FastAPI] = None):
-        print(f"User {user.email} has registered.")
-
-# JWT Authentication
+# JWT Authentication setup
 SECRET = "SECRET"
 
 def get_jwt_strategy() -> JWTStrategy:
@@ -86,32 +113,78 @@ auth_backend = AuthenticationBackend(
     get_strategy=get_jwt_strategy,
 )
 
-# FastAPI setup
+# FastAPI app initialization
 app = FastAPI()
+router = APIRouter()
 
 @app.on_event("startup")
 async def on_startup():
-    # Ensure PynamoDB table exists
     if not UserModel.exists():
         UserModel.create_table(read_capacity_units=1, write_capacity_units=1, wait=True)
+# @app.on_event("startup")
+# async def on_startup():
+#     if UserModel.exists():
+#         print("Table exists Deleting")
+#         UserModel.delete_table()
+#     print("Table Creating")
+#     UserModel.create_table(read_capacity_units=1, write_capacity_units=1, wait=True)
 
-# Function to get user manager
+# User manager dependency
 async def get_user_manager() -> UserManager:
     return UserManager(UserModel)
 
-# Initialize FastAPI Users
 fastapi_users = FastAPIUsers(
-    get_user_manager=get_user_manager,  # Call the function instead of passing the instance
+    get_user_manager=get_user_manager,
     auth_backends=[auth_backend],
 )
 
-# Routes for auth and users
-app.include_router(
-    fastapi_users.get_auth_router(auth_backend),
-    prefix="/auth/jwt",
-    tags=["auth"]
-)
+# Custom login endpoint
+@router.post("/auth/jwt/login", tags=["auth"])
+async def custom_login(
+    request: Request,
+    user_manager=Depends(get_user_manager),
+    form_data: OAuth2PasswordRequestForm = Depends()
+):
+    email = form_data.username
+    password = form_data.password
 
+    # Fetch the user from the database
+    user = await user_manager.get_by_email(email)
+
+    if user is None:
+        raise HTTPException(status_code=400, detail="Incorrect email or password")
+
+    # Verify password
+    if not await user_manager.validate_password(password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Incorrect email or password")
+
+    # Create JWT token
+    jwt_strategy = get_jwt_strategy()
+    token = await jwt_strategy.write_token(user)
+
+    # Store the token in the user's record
+    user.access_token = token
+    user.update(actions=[UserModel.access_token.set(token)])
+
+    return {"access_token": token, "token_type": "bearer"}
+
+app.router.redirect_slashes = True  
+
+
+# Custom logout endpoint
+@router.post("/auth/jwt/logout", tags=["auth"])
+async def logout(current_user: UserModel = Depends(fastapi_users.current_user())):
+    # Set access_token to None for the current user
+    current_user.access_token = None
+
+    # Save the updated user model in PynamoDB
+    current_user.update(actions=[UserModel.access_token.remove()])
+
+    logger.info("User logged out: %s", current_user.email)
+    return {"message": "Logged out successfully"}
+
+# Include the routers
+app.include_router(router)
 app.include_router(
     fastapi_users.get_register_router(UserRead, UserCreate),
     prefix="/auth",
@@ -127,6 +200,8 @@ app.include_router(
 @app.get("/")
 async def read_root():
     return {"message": "Welcome to FastAPI with DynamoDB!"}
+
+
 
 if __name__ == "__main__":
     import uvicorn
