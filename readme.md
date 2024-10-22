@@ -4,11 +4,13 @@ For those who are working with fastapi and dynamodb as database. Also integrated
 
 ### Run Project
 
+```
 uvicorn app.main:app --reload
+```
 
 ## Requirements: 
 
-fastapi-users fastapi uvicorn pynamodb passlib
+fastapi-users fastapi uvicorn pynamodb passlib python-decouple
 
 ### requirements.txt
 ```
@@ -16,6 +18,7 @@ fastapi==0.115.2
 fastapi-users==13.0.0
 passlib==1.7.4
 pynamodb==6.0.1
+python-decouple==3.8
 uvicorn==0.32.0
 ```
 
