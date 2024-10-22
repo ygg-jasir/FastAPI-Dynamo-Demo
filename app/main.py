@@ -15,6 +15,15 @@ from passlib.context import CryptContext
 from fastapi.concurrency import run_in_threadpool
 # Set up logging
 import logging
+from decouple import config
+
+
+# Custom auth
+from fastapi import Depends, HTTPException, Request
+from fastapi.security import OAuth2PasswordBearer
+
+
+print(config('AWS_REGION'))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -34,8 +43,11 @@ class PasswordHelper:
 class UserModel(Model):
     class Meta:
         table_name = "users"
-        region = "us-east-1"
-        host = "http://localhost:8000"
+        region = config('AWS_REGION')
+        host = config('DATABASE_HOST')
+        
+        if config('ENVIRONMENT') == 'local':
+            host = config('DATABASE_HOST')
 
     id = UnicodeAttribute(hash_key=True, default=str(uuid.uuid4()))
     email = UnicodeAttribute(null=False)
@@ -68,9 +80,6 @@ class UserManager(UUIDIDMixin, BaseUserManager[UserModel, uuid.UUID]):
 
     async def on_after_register(self, user: UserModel, request=None):
         logger.info(f"User {user.email} has registered.")
-
-    # async def get(self, user_id: uuid.UUID) -> Optional[UserModel]:
-    #     return UserModel.get(str(user_id))
     
     async def get(self, user_id: uuid.UUID) -> Optional[UserModel]:
     # Convert UUID to string and use run_in_threadpool
@@ -113,6 +122,7 @@ auth_backend = AuthenticationBackend(
     get_strategy=get_jwt_strategy,
 )
 
+
 # FastAPI app initialization
 app = FastAPI()
 router = APIRouter()
@@ -121,13 +131,6 @@ router = APIRouter()
 async def on_startup():
     if not UserModel.exists():
         UserModel.create_table(read_capacity_units=1, write_capacity_units=1, wait=True)
-# @app.on_event("startup")
-# async def on_startup():
-#     if UserModel.exists():
-#         print("Table exists Deleting")
-#         UserModel.delete_table()
-#     print("Table Creating")
-#     UserModel.create_table(read_capacity_units=1, write_capacity_units=1, wait=True)
 
 # User manager dependency
 async def get_user_manager() -> UserManager:
@@ -137,6 +140,50 @@ fastapi_users = FastAPIUsers(
     get_user_manager=get_user_manager,
     auth_backends=[auth_backend],
 )
+
+
+# Custom Auth
+# Reuse the Bearer token authentication method
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/jwt/login")
+
+# Custom function to validate current user based on token
+async def JWTDBAuthentication(
+    token: str = Depends(oauth2_scheme),
+    user_manager: UserManager = Depends(get_user_manager),
+) -> UserModel:
+    """
+    Custom build Authentication by combining Database and JWT strategies 
+    as mentioned in fastapi_users Stragery
+    """
+    # Decode the token with the user_manager passed to the JWTStrategy
+    jwt_strategy = get_jwt_strategy()
+    try:
+        user_data = await jwt_strategy.read_token(token, user_manager=user_manager)
+        if not user_data:
+            raise HTTPException(status_code=401, detail="User Data not found")
+    except Exception as e:
+        logger.info("Exception on login: %s", str(e))
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Fetch the user from the database using the user ID from token
+    user_id = user_data.id
+    user = await user_manager.get(uuid.UUID(user_id))
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    # Compare the token with the stored access token in the user model
+    if user.access_token != token:
+        raise HTTPException(status_code=401, detail="Invalid token or session expired")
+
+    logger.info("Token validated successfully")
+    return user
+
+# Private route with custom current_user validation
+@router.get("/private", tags=["private"])
+async def private_route(current_user: UserModel = Depends(JWTDBAuthentication)):
+    return {"message": f"Hello, {current_user.email}! This is a private route."}
+
+
 
 # Custom login endpoint
 @router.post("/auth/jwt/login", tags=["auth"])
