@@ -35,3 +35,17 @@ AWS_REGION='us-east-1'
 DATABASE_HOST='http://localhost:8000'
 ENVIRONMENT='local'
 ```
+
+## Folder structure
+
+```
+your_project/
+    └── app/
+        ├── main.py
+        ├── models.py
+        ├── schemas.py
+        ├── auth.py
+        ├── managers.py
+        ├── routes.py
+        └── dependencies.py
+```
