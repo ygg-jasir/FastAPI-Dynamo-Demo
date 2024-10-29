@@ -275,7 +275,7 @@ async def logout(current_user: UserModel = Depends(fastapi_users.current_user())
         UserModel.refresh_token.remove()
         ])
     response = JSONResponse({"message": "Logged out successfully"})
-    cookie_transport._delete_cookie(response)
+    cookie_transport._set_logout_cookie(response)
     logger.info("User logged out: %s", current_user.email)
     return response
 
