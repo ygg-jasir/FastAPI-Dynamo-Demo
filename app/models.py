@@ -21,3 +21,5 @@ class UserModel(Model):
     is_active = BooleanAttribute(default=True)
     is_superuser = BooleanAttribute(default=False)
     access_token = UnicodeAttribute(null=True)
+    refresh_token = UnicodeAttribute(null=True)
+    

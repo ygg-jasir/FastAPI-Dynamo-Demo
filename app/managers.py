@@ -5,7 +5,7 @@ from fastapi_users.manager import BaseUserManager, UUIDIDMixin
 from fastapi.concurrency import run_in_threadpool
 from passlib.context import CryptContext
 from fastapi import HTTPException, Request
-from typing import Optional
+from typing import List, Optional
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -55,9 +55,14 @@ class UserManager(UUIDIDMixin, BaseUserManager[UserModel, uuid.UUID]):
             id=str(uuid.uuid4()),
             email=user.email,
             hashed_password=self.password_helper.hash(user.password),
-            is_active=True,
-            is_superuser=False,
+            is_active=user.is_active,
+            is_superuser=user.is_superuser,
             access_token=None,
         )
         user_db.save()
         return user_db
+            
+    async def list_users(self) -> List[UserModel]:
+        result = UserModel.scan()
+        users = [user for user in result]
+        return users

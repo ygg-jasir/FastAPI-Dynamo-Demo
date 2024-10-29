@@ -5,6 +5,15 @@ For those who are working with fastapi and dynamodb as database. Also integrated
 ### Run Project
 
 ```
+
+
+# Activate venv 
+pyenv virtualenvs # to list
+
+# suppose fastapi-pynamo-env is env then
+pyenv activate fastapi-pynamo-env # to activate
+
+
 uvicorn app.main:app --reload
 ```
 
@@ -49,3 +58,5 @@ your_project/
         ├── routes.py
         └── dependencies.py
 ```
+
+## To Run
