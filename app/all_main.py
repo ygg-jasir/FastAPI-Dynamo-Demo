@@ -24,6 +24,9 @@ from decouple import config
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer
 
+import jwt
+
+JWT_ALGORITHM = "HS256"
 
 print(config('AWS_REGION'))
 
@@ -205,6 +208,47 @@ async def JWTDBAuthentication(
     logger.info("Token validated successfully")
     return user
 
+
+# Function to get token expiry timestamp
+async def get_token_expiry(token: str) -> int:
+    try:
+        payload = jwt.decode(token, SECRET, algorithms=[JWT_ALGORITHM], audience="fastapi-users:auth")
+        expiry_timestamp = payload.get("exp")
+        if not expiry_timestamp:
+            raise HTTPException(status_code=401, detail="Token does not have an expiry claim.")
+        return expiry_timestamp
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired.")
+    except jwt.InvalidTokenError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}.")
+
+
+
+
+# Define a function to set both refresh token and access token expiry cookies
+async def set_auth_cookies(response: JSONResponse, refresh_token: str, access_token: str):
+    # Set refresh token cookie
+    response.set_cookie(
+        key="fastapi_dynamo_refresh_token",
+        value=refresh_token,
+        max_age=REFRESH_TOKEN_LIFETIME,
+        httponly=True,
+        samesite="Lax",
+    )
+    print("Refresh token cookie set successfully")
+    # Calculate and set access token expiry time in a cookie
+
+    access_token_expiry_timestamp = await get_token_expiry(access_token)
+    response.set_cookie(
+        key="fastapi_dynamo_access_token_expiry",
+        value=str(access_token_expiry_timestamp),  # Store as string
+        max_age=ACCESS_TOKEN_LIFETIME,
+        httponly=True,
+        samesite="Lax",
+    )
+    print("Access token expiry cookie set successfully")
+
+
 # Private route with custom current_user validation
 @router.get("/private", tags=["private"])
 async def private_route(current_user: UserModel = Depends(JWTDBAuthentication)):
@@ -255,7 +299,8 @@ async def custom_login(
         "refresh_token": refresh_token
         })
     
-    cookie_transport._set_login_cookie(response, refresh_token)
+    # cookie_transport._set_login_cookie(response, refresh_token)
+    await set_auth_cookies(response, refresh_token, access_token)
 
     return response
 
