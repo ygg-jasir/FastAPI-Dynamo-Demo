@@ -1,0 +1,1 @@
+echo pyenv activate fastapi-pynamo-env

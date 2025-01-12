@@ -1,0 +1,18 @@
+
+
+KAFKA_BOOTSTRAP_SERVERS = 'localhost:9092'
+KAFKA_TOPIC = 'my_topic'
+
+
+# Constants for binary system
+BINARY_SIZE = 1024
+
+BIT = 1  # 1 bit
+BYTE = 8 * BIT  # 1 byte = 8 bits
+KILOBYTE = BINARY_SIZE * BIT  # 1 KB = 1024 bytes
+MEGABYTE = BINARY_SIZE * KILOBYTE  # 1 MB = 1024 KB
+
+MAX_REQUEST_SIZE = 1 * MEGABYTE # 10 MB
+FETCH_MAX_BYTES = 1 * MEGABYTE
+
+print("MAX_REQUEST_SIZE ",MAX_REQUEST_SIZE)
